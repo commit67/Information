@@ -109,7 +109,6 @@
                     <h1 class="text-2xl md:text-3xl font-black tracking-tight text-white flex items-center gap-2">
                         네트워크 기초 인터랙티브 랩
                     </h1>
-                    <p class="text-xs md:text-sm font-semibold text-emerald-400">교실 빔프로젝터 발표 및 학생 실습용 레슨 모드</p>
                 </div>
             </div>
 
@@ -815,10 +814,30 @@
                 ctx.textBaseline = 'middle';
                 ctx.fillText(emoji, x, y);
 
-                // 라벨 텍스트 (빔프로젝터용 굵은 글씨)
+                // 라벨 텍스트 (빔프로젝터용 굵은 글씨, 줄바꿈 처리 추가)
                 ctx.fillStyle = '#ffffff';
-                ctx.font = 'black 15px sans-serif';
-                ctx.fillText(label, x, y + 58);
+                ctx.font = 'bold 14px sans-serif';
+                
+                const words = label.split(' ');
+                let line = '';
+                let yPos = y + 55;
+                const lineHeight = 18;
+
+                for(let n = 0; n < words.length; n++) {
+                  let testLine = line + words[n] + ' ';
+                  let metrics = ctx.measureText(testLine);
+                  let testWidth = metrics.width;
+                  
+                  if (testWidth > 90 && n > 0) {
+                    ctx.fillText(line, x, yPos);
+                    line = words[n] + ' ';
+                    yPos += lineHeight;
+                  }
+                  else {
+                    line = testLine;
+                  }
+                }
+                ctx.fillText(line, x, yPos);
             }
 
             function drawLine(ctx, x1, y1, x2, y2) {
