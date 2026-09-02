@@ -1,0 +1,1090 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2D 스마트 건축 평면도 시뮬레이터</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <style>
+    .custom-scrollbar::-webkit-scrollbar {
+      width: 6px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: rgba(241, 245, 249, 0.8);
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: rgba(203, 213, 225, 0.9);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-slate-100 text-slate-800 antialiased font-sans">
+  <div id="root"></div>
+
+  <script type="text/babel" data-type="module">
+    import React, { useState, useEffect, useRef } from 'https://esm.sh/react@18';
+    import ReactDOM from 'https://esm.sh/react-dom@18/client';
+    import { 
+      Lightbulb, Thermometer, Activity, Droplet, Power, DoorClosed, 
+      Fan, Sparkles, Send, Loader2, Plus, Trash2, RotateCw, Tv, 
+      Armchair, Bed, Utensils, Layers, Plug, Camera, Compass, 
+      Maximize2, Sun, Zap, SlidersHorizontal, ToggleLeft, ToggleRight, Box,
+      Download, FileText, ZoomIn, ZoomOut, Move
+    } from 'https://esm.sh/lucide-react@0.263.1';
+
+    const ROOM_NAMES = ['거실', '안방', '주방', '욕실', '현관', '작은방', '발코니'];
+
+    // 800x480 도면 기준 방 구역 좌표 정의
+    const ROOM_DEFINITIONS = [
+      { name: '주방', x1: 0, y1: 0, x2: 352, y2: 220.8 },
+      { name: '욕실', x1: 352, y1: 0, x2: 512, y2: 172.8 },
+      { name: '안방', x1: 512, y1: 0, x2: 800, y2: 259.2 },
+      { name: '현관', x1: 0, y1: 220.8, x2: 144, y2: 403.2 },
+      { name: '거실', x1: 144, y1: 220.8, x2: 512, y2: 403.2 },
+      { name: '작은방', x1: 512, y1: 259.2, x2: 800, y2: 480 },
+      { name: '발코니', x1: 0, y1: 403.2, x2: 512, y2: 480 }
+    ];
+
+    const getRoomNameAt = (x, y) => {
+      const found = ROOM_DEFINITIONS.find(
+        r => x >= r.x1 && x <= r.x2 && y >= r.y1 && y <= r.y2
+      );
+      return found ? found.name : '';
+    };
+
+    const formatNameWithRoom = (currentName, newRoomName) => {
+      let baseName = currentName || '';
+      ROOM_NAMES.forEach(r => {
+        if (baseName.startsWith(r + ' ')) {
+          baseName = baseName.replace(r + ' ', '');
+        } else if (baseName === r) {
+          baseName = '';
+        }
+      });
+
+      if (!newRoomName) return baseName;
+      return `${newRoomName} ${baseName}`.trim();
+    };
+
+    const INITIAL_CATALOG_ITEMS = [
+      { type: 'sofa', name: '3인용 소파', category: 'furniture', icon: Armchair, defaultState: {} },
+      { type: 'bed', name: '킹사이즈 침대', category: 'furniture', icon: Bed, defaultState: {} },
+      { type: 'table', name: '다이닝 테이블', category: 'furniture', icon: Utensils, defaultState: {} },
+      { type: 'tv', name: '스마트 TV', category: 'furniture', icon: Tv, defaultState: { isOn: false } },
+      { type: 'fridge', name: '양문형 냉장고', category: 'furniture', icon: Layers, defaultState: { isOn: true } },
+      
+      { type: 'light', name: '스마트 천장등', category: 'device', icon: Lightbulb, defaultState: { isOn: false } },
+      { type: 'plug', name: '스마트 콘센트', category: 'device', icon: Plug, defaultState: { isOn: false } },
+      { type: 'fan', name: '에어컨/환풍기', category: 'device', icon: Fan, defaultState: { isOn: false } },
+      { type: 'camera', name: '보안 CCTV', category: 'device', icon: Camera, defaultState: { isOn: true } },
+
+      { type: 'tempSensor', name: '온도 센서', category: 'sensor', icon: Thermometer, defaultState: { val: 24.0 } },
+      { type: 'luxSensor', name: '조도 센서', category: 'sensor', icon: Sun, defaultState: { val: 450 } },
+      { type: 'motionSensor', name: '모션 센서', category: 'sensor', icon: Activity, defaultState: { active: false } },
+      { type: 'windowSensor', name: '창문 센서', category: 'sensor', icon: DoorClosed, defaultState: { isOpen: false } },
+      { type: 'waterSensor', name: '누수 센서', category: 'sensor', icon: Droplet, defaultState: { isLeak: false } }
+    ];
+
+    const INITIAL_PLACED_ITEMS = [
+      { id: 'item-1', type: 'sofa', name: '거실 소파', x: 280, y: 350, rotation: 0, scale: 1.0, category: 'furniture', state: {} },
+      { id: 'item-2', type: 'tv', name: '거실 TV', x: 420, y: 350, rotation: 0, scale: 1.0, category: 'furniture', state: { isOn: true } },
+      { id: 'item-3', type: 'light', name: '거실 천장등', x: 320, y: 280, rotation: 0, scale: 1.0, category: 'device', state: { isOn: true } },
+      { id: 'item-4', type: 'tempSensor', name: '거실 온도센서', x: 220, y: 260, rotation: 0, scale: 1.0, category: 'sensor', state: { val: 27.5 } },
+      { id: 'item-5', type: 'luxSensor', name: '거실 조도센서', x: 440, y: 260, rotation: 0, scale: 1.0, category: 'sensor', state: { val: 250 } },
+      
+      { id: 'item-6', type: 'bed', name: '안방 침대', x: 650, y: 150, rotation: 0, scale: 1.0, category: 'furniture', state: {} },
+      { id: 'item-7', type: 'light', name: '안방 천장등', x: 580, y: 80, rotation: 0, scale: 1.0, category: 'device', state: { isOn: false } },
+      { id: 'item-8', type: 'motionSensor', name: '안방 모션센서', x: 730, y: 80, rotation: 0, scale: 1.0, category: 'sensor', state: { active: false } },
+
+      { id: 'item-9', type: 'table', name: '주방 다이닝 테이블', x: 220, y: 140, rotation: 0, scale: 1.0, category: 'furniture', state: {} },
+      { id: 'item-10', type: 'fridge', name: '주방 냉장고', x: 90, y: 80, rotation: 0, scale: 1.0, category: 'furniture', state: { isOn: true } },
+      { id: 'item-11', type: 'fan', name: '주방 환풍기', x: 280, y: 60, rotation: 0, scale: 1.0, category: 'device', state: { isOn: false } },
+
+      { id: 'item-12', type: 'fan', name: '욕실 환풍기', x: 420, y: 70, rotation: 0, scale: 1.0, category: 'device', state: { isOn: false } },
+      { id: 'item-13', type: 'waterSensor', name: '욕실 누수센서', x: 450, y: 130, rotation: 0, scale: 1.0, category: 'sensor', state: { isLeak: false } }
+    ];
+
+    const INITIAL_RULES = [
+      { id: 'rule-1', name: '거실 고온 시 주방 환풍기 가동', sensorName: '거실 온도센서', condition: 'gt', threshold: 26, targetName: '주방 환풍기', actionStateKey: 'isOn', actionValue: true, enabled: true },
+      { id: 'rule-2', name: '거실 어두워지면 거실 천장등 켜짐', sensorName: '거실 조도센서', condition: 'lt', threshold: 300, targetName: '거실 천장등', actionStateKey: 'isOn', actionValue: true, enabled: true },
+      { id: 'rule-3', name: '안방 모션 감지 시 거실 TV ON', sensorName: '안방 모션센서', condition: 'is', threshold: true, targetName: '거실 TV', actionStateKey: 'isOn', actionValue: true, enabled: true }
+    ];
+
+    const applyAutomationRules = (itemList, ruleList) => {
+      const activeRules = ruleList.filter(r => r.enabled);
+      if (activeRules.length === 0) return itemList;
+
+      let hasChanges = false;
+      const updatedItems = itemList.map(item => {
+        let newItemState = { ...item.state };
+        let itemModified = false;
+
+        const applicableRules = activeRules.filter(r => r.targetName === item.name);
+
+        applicableRules.forEach(rule => {
+          const matchingSensors = itemList.filter(i => i.name === rule.sensorName);
+          if (matchingSensors.length === 0) return;
+
+          const isTriggered = matchingSensors.some(sensor => {
+            if (rule.condition === 'gt') return (sensor.state.val ?? 0) >= Number(rule.threshold);
+            else if (rule.condition === 'lt') return (sensor.state.val ?? 0) <= Number(rule.threshold);
+            else if (rule.condition === 'is') {
+              let currentVal = false;
+              if ('active' in sensor.state) currentVal = sensor.state.active;
+              else if ('isOpen' in sensor.state) currentVal = sensor.state.isOpen;
+              else if ('isLeak' in sensor.state) currentVal = sensor.state.isLeak;
+              
+              const targetThresh = (rule.threshold === true || String(rule.threshold) === 'true');
+              return currentVal === targetThresh;
+            }
+            return false;
+          });
+
+          const targetVal = isTriggered ? rule.actionValue : !rule.actionValue;
+          if (newItemState[rule.actionStateKey] !== targetVal) {
+            newItemState[rule.actionStateKey] = targetVal;
+            itemModified = true;
+          }
+        });
+
+        if (itemModified) {
+          hasChanges = true;
+          return { ...item, state: newItemState };
+        }
+        return item;
+      });
+
+      return hasChanges ? updatedItems : itemList;
+    };
+
+    const App = () => {
+      const [catalogItems, setCatalogItems] = useState(INITIAL_CATALOG_ITEMS);
+      const [rules, setRules] = useState(INITIAL_RULES);
+      const [items, setItems] = useState(() => applyAutomationRules(INITIAL_PLACED_ITEMS, INITIAL_RULES));
+      const [selectedItemId, setSelectedItemId] = useState(null);
+      const [selectedRuleId, setSelectedRuleId] = useState('');
+      const [activeTab, setActiveTab] = useState('all');
+
+      const [showRuleModal, setShowRuleModal] = useState(false);
+      const [newRule, setNewRule] = useState({ name: '', sensorName: '', condition: 'gt', threshold: 25, targetName: '', actionValue: true });
+      const [ruleError, setRuleError] = useState('');
+
+      const [showCustomItemModal, setShowCustomItemModal] = useState(false);
+      const [newCustomItem, setNewCustomItem] = useState({ name: '', category: 'furniture', hasState: false });
+
+      const [draggingItemId, setDraggingItemId] = useState(null);
+      const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
+      const [isDragging, setIsDragging] = useState(false);
+      const floorplanRef = useRef(null);
+
+      const [floorplanSize, setFloorplanSize] = useState({ width: 800, height: 480 });
+      const BASE_WIDTH = 800;
+      const BASE_HEIGHT = 480;
+      const scaleFactor = Math.max(0.3, floorplanSize.width / BASE_WIDTH);
+
+      const [isExportingPdf, setIsExportingPdf] = useState(false);
+
+      useEffect(() => {
+        if (!floorplanRef.current) return;
+        const updateSize = () => {
+          if (floorplanRef.current) {
+            setFloorplanSize({
+              width: floorplanRef.current.clientWidth,
+              height: floorplanRef.current.clientHeight
+            });
+          }
+        };
+        updateSize();
+        const resizeObserver = new ResizeObserver(updateSize);
+        resizeObserver.observe(floorplanRef.current);
+        return () => resizeObserver.disconnect();
+      }, []);
+
+      useEffect(() => {
+        setItems(prev => applyAutomationRules(prev, rules));
+      }, [rules]);
+
+      const toggleRuleEnabled = (ruleId) => {
+        setRules(prev => prev.map(r => r.id === ruleId ? { ...r, enabled: !r.enabled } : r));
+      };
+
+      const deleteRule = (ruleId) => {
+        setRules(prev => prev.filter(r => r.id !== ruleId));
+        if (selectedRuleId === ruleId) setSelectedRuleId('');
+      };
+
+      const executeRuleById = (ruleId) => {
+        const targetRule = rules.find(r => r.id === ruleId);
+        if (!targetRule) return;
+
+        setItems(prev => {
+          return prev.map(item => {
+            if (item.name === targetRule.targetName) {
+              return { ...item, state: { ...item.state, [targetRule.actionStateKey]: targetRule.actionValue } };
+            }
+            return item;
+          });
+        });
+      };
+
+      useEffect(() => {
+        const handleGlobalMove = (e) => {
+          if (!draggingItemId || !floorplanRef.current) return;
+          const rect = floorplanRef.current.getBoundingClientRect();
+          const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+          const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+
+          const rawX = (clientX - rect.left - dragOffset.x) / scaleFactor;
+          const rawY = (clientY - rect.top - dragOffset.y) / scaleFactor;
+
+          let newX = Math.max(25, Math.min(BASE_WIDTH - 25, rawX));
+          let newY = Math.max(25, Math.min(BASE_HEIGHT - 25, rawY));
+
+          const currentRoomName = getRoomNameAt(newX, newY);
+
+          setIsDragging(true);
+          setItems(prev => prev.map(item => {
+            if (item.id === draggingItemId) {
+              const newName = formatNameWithRoom(item.name, currentRoomName);
+              return { ...item, x: newX, y: newY, name: newName };
+            }
+            return item;
+          }));
+        };
+
+        const handleGlobalUp = () => {
+          setDraggingItemId(null);
+          setTimeout(() => setIsDragging(false), 50);
+        };
+
+        if (draggingItemId) {
+          window.addEventListener('mousemove', handleGlobalMove);
+          window.addEventListener('mouseup', handleGlobalUp);
+          window.addEventListener('touchmove', handleGlobalMove, { passive: false });
+          window.addEventListener('touchend', handleGlobalUp);
+        }
+
+        return () => {
+          window.removeEventListener('mousemove', handleGlobalMove);
+          window.removeEventListener('mouseup', handleGlobalUp);
+          window.removeEventListener('touchmove', handleGlobalMove);
+          window.removeEventListener('touchend', handleGlobalUp);
+        };
+      }, [draggingItemId, dragOffset, scaleFactor]);
+
+      const toggleItemState = (itemId) => {
+        setItems(prev => {
+          let isSensorChanged = false;
+          const updated = prev.map(item => {
+            if (item.id === itemId) {
+              if (item.category === 'sensor') {
+                isSensorChanged = true;
+              }
+              if ('isOn' in item.state) return { ...item, state: { ...item.state, isOn: !item.state.isOn } };
+              else if ('isOpen' in item.state) return { ...item, state: { ...item.state, isOpen: !item.state.isOpen } };
+              else if ('active' in item.state) return { ...item, state: { ...item.state, active: !item.state.active } };
+              else if ('isLeak' in item.state) return { ...item, state: { ...item.state, isLeak: !item.state.isLeak } };
+            }
+            return item;
+          });
+          
+          return isSensorChanged ? applyAutomationRules(updated, rules) : updated;
+        });
+      };
+
+      const updateSensorVal = (itemId, key, value) => {
+        setItems(prev => {
+          const updated = prev.map(item => item.id === itemId ? { ...item, state: { ...item.state, [key]: value } } : item);
+          return applyAutomationRules(updated, rules);
+        });
+      };
+
+      const updateItemScale = (itemId, delta) => {
+        setItems(prev => prev.map(item => {
+          if (item.id === itemId) {
+            const currentScale = item.scale || 1.0;
+            const newScale = Math.min(2.0, Math.max(0.5, parseFloat((currentScale + delta).toFixed(2))));
+            return { ...item, scale: newScale };
+          }
+          return item;
+        }));
+      };
+
+      const addItemToFloorplan = (catalogItem, xPos = 400, yPos = 200) => {
+        const baseX = Math.max(25, Math.min(BASE_WIDTH - 25, xPos / scaleFactor));
+        const baseY = Math.max(25, Math.min(BASE_HEIGHT - 25, yPos / scaleFactor));
+
+        const roomName = getRoomNameAt(baseX, baseY);
+        const formattedName = formatNameWithRoom(catalogItem.name, roomName);
+
+        const newItem = {
+          id: `item-${Date.now()}`, 
+          type: catalogItem.type, 
+          name: formattedName || catalogItem.name,
+          x: baseX, 
+          y: baseY, 
+          rotation: 0, 
+          scale: 1.0, 
+          category: catalogItem.category, 
+          state: { ...catalogItem.defaultState }
+        };
+        setItems(prev => applyAutomationRules([...prev, newItem], rules));
+        setSelectedItemId(newItem.id);
+      };
+
+      const handleOpenRuleModal = () => {
+        const firstSensor = items.find(i => i.category === 'sensor');
+        const firstTarget = items.find(i => i.category === 'device' || i.category === 'furniture');
+        
+        const isBoolSensor = firstSensor && ['motionSensor', 'windowSensor', 'waterSensor'].includes(firstSensor.type);
+
+        setRuleError('');
+        setNewRule({ 
+          name: '', 
+          sensorName: firstSensor?.name || '', 
+          condition: isBoolSensor ? 'is' : 'gt', 
+          threshold: isBoolSensor ? true : 25, 
+          targetName: firstTarget?.name || '', 
+          actionValue: true 
+        });
+        setShowRuleModal(true);
+      };
+
+      const handleAddRule = (e) => {
+        e.preventDefault();
+        const trimmedName = newRule.name.trim();
+        if (!trimmedName || !newRule.sensorName || !newRule.targetName) return;
+
+        if (rules.some(r => r.name.trim() === trimmedName)) {
+          setRuleError('이미 존재하는 규칙 이름입니다. 다른 이름을 입력해 주세요.');
+          return;
+        }
+
+        const ruleObj = {
+          id: `rule-${Date.now()}`, name: trimmedName, sensorName: newRule.sensorName, condition: newRule.condition,
+          threshold: newRule.condition === 'is' ? (newRule.threshold === true || String(newRule.threshold) === 'true') : Number(newRule.threshold), 
+          targetName: newRule.targetName, actionStateKey: 'isOn', actionValue: newRule.actionValue, enabled: true
+        };
+        setRules(prev => [...prev, ruleObj]);
+        setShowRuleModal(false);
+        setRuleError('');
+      };
+
+      const handleAddCustomItem = (e) => {
+        e.preventDefault();
+        if (!newCustomItem.name.trim()) return;
+
+        const newType = `custom-${Date.now()}`;
+        const itemToAdd = {
+          type: newType,
+          name: newCustomItem.name,
+          category: newCustomItem.category,
+          icon: Box,
+          defaultState: newCustomItem.hasState ? { isOn: false } : {}
+        };
+
+        setCatalogItems(prev => [...prev, itemToAdd]);
+        setShowCustomItemModal(false);
+        setNewCustomItem({ name: '', category: 'furniture', hasState: false });
+      };
+
+      const handleMouseDown = (e, item) => {
+        e.stopPropagation();
+        setSelectedItemId(item.id);
+        setDraggingItemId(item.id);
+        setIsDragging(false);
+        if (floorplanRef.current) {
+          const rect = floorplanRef.current.getBoundingClientRect();
+          const clientX = e.clientX !== undefined ? e.clientX : (e.touches && e.touches[0] ? e.touches[0].clientX : 0);
+          const clientY = e.clientY !== undefined ? e.clientY : (e.touches && e.touches[0] ? e.touches[0].clientY : 0);
+          
+          const itemScreenX = item.x * scaleFactor;
+          const itemScreenY = item.y * scaleFactor;
+
+          setDragOffset({ x: clientX - rect.left - itemScreenX, y: clientY - rect.top - itemScreenY });
+        }
+      };
+
+      const handleExportPdf = async () => {
+        if (!floorplanRef.current) return;
+        setIsExportingPdf(true);
+
+        setSelectedItemId(null);
+        await new Promise(resolve => setTimeout(resolve, 150));
+
+        try {
+          const floorplanCanvas = await html2canvas(floorplanRef.current, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#f8fafc',
+            logging: false,
+            onclone: (clonedDoc) => {
+              const blurs = clonedDoc.querySelectorAll('.blur-lg, .blur-md, .blur-sm, .backdrop-blur-sm');
+              blurs.forEach(el => {
+                el.style.filter = 'none';
+                el.style.backdropFilter = 'none';
+              });
+            }
+          });
+          const floorplanImgData = floorplanCanvas.toDataURL('image/png');
+
+          const reportEl = document.createElement('div');
+          reportEl.style.position = 'fixed';
+          reportEl.style.left = '0';
+          reportEl.style.top = '0';
+          reportEl.style.width = '800px';
+          reportEl.style.zIndex = '-9999';
+          reportEl.style.backgroundColor = '#ffffff';
+          reportEl.style.color = '#0f172a';
+          reportEl.style.padding = '32px';
+          reportEl.style.fontFamily = "'Apple SD Gothic Neo', 'Malgun Gothic', 'Noto Sans KR', sans-serif";
+          reportEl.style.boxSizing = 'border-box';
+
+          reportEl.innerHTML = `
+            <div style="border-bottom: 2px solid #e2e8f0; padding-bottom: 16px; margin-bottom: 24px;">
+              <h1 style="font-size: 22px; font-weight: bold; color: #d97706; margin: 0 0 6px 0;">⚡ 스마트홈 건축 평면도 & 자동화 리포트</h1>
+              <p style="font-size: 12px; color: #64748b; margin: 0;">발행일시: ${new Date().toLocaleString('ko-KR')}</p>
+            </div>
+
+            <div style="margin-bottom: 28px;">
+              <h2 style="font-size: 15px; font-weight: bold; color: #0284c7; margin: 0 0 12px 0;">1. 건축 평면도 시각화</h2>
+              <div style="text-align: center; background: #f8fafc; border-radius: 12px; padding: 12px; border: 1px solid #cbd5e1;">
+                <img src="${floorplanImgData}" style="width: 100%; height: auto; border-radius: 8px; display: block;" />
+              </div>
+            </div>
+
+            <div style="margin-bottom: 28px;">
+              <h2 style="font-size: 15px; font-weight: bold; color: #0284c7; margin: 0 0 12px 0;">2. 배치된 기기 및 센서 현황 (${items.length}개)</h2>
+              <table style="width: 100%; border-collapse: collapse; font-size: 11px; text-align: left;">
+                <thead>
+                  <tr style="background-color: #f1f5f9; color: #334155;">
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1; width: 40px;">번호</th>
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1; width: 80px;">분류</th>
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1;">이름</th>
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1; width: 140px;">현재 상태 / 수치</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${items.map((item, idx) => {
+                    let stateText = "-";
+                    if ('val' in item.state) stateText = `${item.state.val} ${item.type === 'tempSensor' ? '°C' : 'lx'}`;
+                    else if ('isOn' in item.state) stateText = item.state.isOn ? '<span style="color: #16a34a; font-weight: bold;">ON</span>' : '<span style="color: #64748b;">OFF</span>';
+                    else if ('active' in item.state) stateText = item.state.active ? '<span style="color: #dc2626; font-weight: bold;">감지됨</span>' : '미감지';
+                    else if ('isOpen' in item.state) stateText = item.state.isOpen ? '<span style="color: #dc2626; font-weight: bold;">열림</span>' : '닫힘';
+                    else if ('isLeak' in item.state) stateText = item.state.isLeak ? '<span style="color: #dc2626; font-weight: bold;">누수 발생</span>' : '정상';
+
+                    const categoryBadge = item.category === 'sensor' ? '센서' : item.category === 'device' ? '스마트기기' : '가구';
+
+                    return `
+                      <tr style="border-bottom: 1px solid #e2e8f0; color: #1e293b;">
+                        <td style="padding: 8px 10px;">${idx + 1}</td>
+                        <td style="padding: 8px 10px; color: #64748b;">${categoryBadge}</td>
+                        <td style="padding: 8px 10px; font-weight: 600;">${item.name}</td>
+                        <td style="padding: 8px 10px;">${stateText}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <h2 style="font-size: 15px; font-weight: bold; color: #0284c7; margin: 0 0 12px 0;">3. 자동화 규칙 설정 (${rules.length}개)</h2>
+              <table style="width: 100%; border-collapse: collapse; font-size: 11px; text-align: left;">
+                <thead>
+                  <tr style="background-color: #f1f5f9; color: #334155;">
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1; width: 60px;">상태</th>
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1;">규칙명</th>
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1;">조건 (IF)</th>
+                    <th style="padding: 8px 10px; border-bottom: 2px solid #cbd5e1;">동작 (THEN)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${rules.map(rule => {
+                    const condStr = rule.condition === 'gt' ? '>=' : rule.condition === 'lt' ? '<=' : '==';
+                    return `
+                      <tr style="border-bottom: 1px solid #e2e8f0; color: #1e293b;">
+                        <td style="padding: 8px 10px;">${rule.enabled ? '<span style="color: #16a34a; font-weight: bold;">활성</span>' : '<span style="color: #94a3b8;">비활성</span>'}</td>
+                        <td style="padding: 8px 10px; font-weight: 600;">${rule.name}</td>
+                        <td style="padding: 8px 10px;">${rule.sensorName} ${condStr} ${rule.threshold}</td>
+                        <td style="padding: 8px 10px;">${rule.targetName} -&gt; ${rule.actionValue ? 'ON' : 'OFF'}</td>
+                      </tr>
+                    `;
+                  }).join('')}
+                </tbody>
+              </table>
+            </div>
+          `;
+
+          document.body.appendChild(reportEl);
+          await new Promise(r => setTimeout(r, 100));
+
+          const reportCanvas = await html2canvas(reportEl, {
+            scale: 2,
+            useCORS: true,
+            backgroundColor: '#ffffff',
+            logging: false
+          });
+
+          document.body.removeChild(reportEl);
+
+          const fullImgData = reportCanvas.toDataURL('image/png');
+          const { jsPDF } = window.jspdf;
+          const pdf = new jsPDF('p', 'mm', 'a4');
+          
+          const pageWidth = 210;
+          const pageHeight = 297;
+          const imgWidth = pageWidth;
+          const imgHeight = (reportCanvas.height * imgWidth) / reportCanvas.width;
+          let heightLeft = imgHeight;
+          let position = 0;
+
+          pdf.addImage(fullImgData, 'PNG', 0, position, imgWidth, imgHeight);
+          heightLeft -= pageHeight;
+
+          while (heightLeft > 0) {
+            position -= pageHeight;
+            pdf.addPage();
+            pdf.addImage(fullImgData, 'PNG', 0, position, imgWidth, imgHeight);
+            heightLeft -= pageHeight;
+          }
+
+          pdf.save(`스마트홈_평면도_리포트_${Date.now()}.pdf`);
+        } catch (err) {
+          console.error("Exporting PDF failed:", err);
+        } finally {
+          setIsExportingPdf(false);
+        }
+      };
+
+      const sensorItemsList = items.filter(i => i.category === 'sensor');
+
+      return (
+        <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans">
+          {/* Header */}
+          <header className="max-w-[1600px] mx-auto mb-6 bg-white rounded-2xl p-4 border border-slate-200 shadow-sm flex flex-wrap justify-between items-center gap-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-amber-500 text-white rounded-xl shadow-md">
+                <Layers size={24} />
+              </div>
+              <div>
+                <h1 className="text-xl font-bold text-slate-800">2D 스마트 건축 평면도 시뮬레이터</h1>
+                <p className="text-xs text-slate-500">실시간 방 구역 자동 감지 & 파라메트릭 제어 시스템</p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setShowCustomItemModal(true)}
+                className="px-3.5 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+              >
+                <Plus size={15} /> 기기 만들기
+              </button>
+              <button
+                onClick={handleOpenRuleModal}
+                className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all"
+              >
+                <Zap size={15} /> 규칙 추가
+              </button>
+              <button
+                onClick={handleExportPdf}
+                disabled={isExportingPdf}
+                className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-sm transition-all disabled:opacity-50"
+              >
+                {isExportingPdf ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+                PDF 저장
+              </button>
+            </div>
+          </header>
+
+          {/* Architectural Floor Plan Canvas */}
+          <section className="mb-6 bg-white rounded-2xl p-4 border border-slate-200 shadow-sm max-w-[1600px] mx-auto">
+            <div className="flex justify-between items-center mb-2">
+              <span className="text-xs font-semibold text-amber-600 flex items-center gap-1.5">
+                <Maximize2 size={14} /> 아파트형 3-Bay 스마트 주택 평면도 (이동 시 위치한 방 이름으로 자동 변경)
+              </span>
+              <div className="flex items-center gap-4 text-xs text-slate-500 font-mono">
+                <span className="flex items-center gap-1"><Compass size={13} /> N 08° E</span>
+                <span className="text-slate-400">Scale {(scaleFactor * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+
+            <div
+              ref={floorplanRef}
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                const type = e.dataTransfer.getData('catalogType');
+                const catItem = catalogItems.find(c => c.type === type);
+                if (!catItem || !floorplanRef.current) return;
+                const rect = floorplanRef.current.getBoundingClientRect();
+                addItemToFloorplan(catItem, e.clientX - rect.left, e.clientY - rect.top);
+              }}
+              onClick={() => setSelectedItemId(null)}
+              className="w-full aspect-[5/3] max-h-[75vh] min-h-[420px] bg-slate-100 rounded-xl border-[6px] md:border-[8px] border-slate-700 relative overflow-hidden shadow-inner select-none"
+              style={{ backgroundImage: `linear-gradient(to right, rgba(0, 0, 0, 0.04) 1px, transparent 1px), linear-gradient(to bottom, rgba(0, 0, 0, 0.04) 1px, transparent 1px)`, backgroundSize: `${20 * scaleFactor}px ${20 * scaleFactor}px` }}
+            >
+              {/* Windows & Outer Doors */}
+              <div className="absolute top-0 left-[15%] w-32 h-[8px] bg-sky-300 border border-sky-500 z-20" title="주방 창문" />
+              <div className="absolute top-0 right-[15%] w-36 h-[8px] bg-sky-300 border border-sky-500 z-20" title="안방 창문" />
+              <div className="absolute bottom-0 left-[12%] w-48 h-[8px] bg-sky-300 border border-sky-500 z-20" title="거실 발코니 창" />
+              <div className="absolute bottom-[30%] left-0 h-16 w-[8px] bg-amber-600 border border-amber-800 z-20" title="현관 중문/출입구" />
+
+              {/* Rooms Grid Layout */}
+              <div className="absolute inset-0 w-full h-full">
+
+                {/* 1. KITCHEN & DINING */}
+                <div className="absolute top-0 left-0 w-[44%] h-[46%] bg-amber-50/70 border-r-[6px] border-b-[6px] border-slate-600 p-3 flex flex-col justify-between">
+                  <div className="flex justify-between items-start pointer-events-none">
+                    <span className="text-[11px] font-bold text-amber-900 bg-amber-200/90 px-2 py-0.5 rounded border border-amber-400 shadow-sm">KITCHEN / DINING (주방)</span>
+                    <span className="text-[10px] font-mono text-slate-500">4.5m x 3.2m</span>
+                  </div>
+                  <div className="w-16 h-28 border-t-2 border-r-2 border-slate-300 bg-slate-200/50 rounded-tr-lg pointer-events-none" />
+                </div>
+
+                {/* 2. BATHROOM */}
+                <div className="absolute top-0 left-[44%] w-[20%] h-[36%] bg-cyan-50/80 border-r-[6px] border-b-[6px] border-slate-600 p-2 flex flex-col justify-between">
+                  <div className="flex justify-between items-start pointer-events-none">
+                    <span className="text-[10px] font-bold text-cyan-900 bg-cyan-200/90 px-1.5 py-0.5 rounded border border-cyan-400 shadow-sm">BATHROOM (욕실)</span>
+                  </div>
+                  <div className="absolute -bottom-[6px] left-3 w-8 h-[6px] bg-amber-100 border-x border-slate-400 z-10" />
+                </div>
+
+                {/* 3. MASTER BEDROOM */}
+                <div className="absolute top-0 left-[64%] w-[36%] h-[54%] bg-purple-50/70 border-b-[6px] border-slate-600 p-3 flex flex-col justify-between">
+                  <div className="flex justify-between items-start pointer-events-none">
+                    <span className="text-[11px] font-bold text-purple-900 bg-purple-200/90 px-2 py-0.5 rounded border border-purple-400 shadow-sm">MASTER BEDROOM (안방)</span>
+                    <span className="text-[10px] font-mono text-slate-500">4.2m x 3.8m</span>
+                  </div>
+                  <div className="absolute top-[60%] -left-[6px] h-10 w-[6px] bg-amber-100 border-y border-slate-400 z-10" />
+                </div>
+
+                {/* 4. FOYER */}
+                <div className="absolute top-[46%] left-0 w-[18%] h-[38%] bg-stone-200/80 border-r-[6px] border-b-[6px] border-slate-600 p-2 flex flex-col justify-between">
+                  <span className="text-[10px] font-bold text-stone-800 bg-white/90 px-1.5 py-0.5 rounded border border-stone-300 shadow-sm w-fit pointer-events-none">FOYER (현관)</span>
+                  <span className="text-[9px] text-stone-500 font-semibold pointer-events-none">신발장 & 중문</span>
+                  <div className="absolute left-0 top-1/2 -translate-y-1/2 w-[6px] h-12 bg-amber-500 border border-amber-700" />
+                </div>
+
+                {/* 5. LIVING ROOM */}
+                <div className="absolute top-[46%] left-[18%] w-[46%] h-[38%] bg-orange-50/60 border-r-[6px] border-b-[6px] border-slate-600 p-3 flex flex-col justify-between">
+                  <div className="flex justify-between items-start pointer-events-none">
+                    <span className="text-[11px] font-bold text-amber-900 bg-amber-200/90 px-2 py-0.5 rounded border border-amber-400 shadow-sm">LIVING ROOM (거실)</span>
+                    <span className="text-[10px] font-mono text-slate-500">5.8m x 4.0m</span>
+                  </div>
+                </div>
+
+                {/* 6. BEDROOM 2 */}
+                <div className="absolute top-[54%] left-[64%] w-[36%] h-[46%] bg-emerald-50/70 p-3 flex flex-col justify-between">
+                  <div className="flex justify-between items-start pointer-events-none">
+                    <span className="text-[11px] font-bold text-emerald-900 bg-emerald-200/90 px-2 py-0.5 rounded border border-emerald-400 shadow-sm">BEDROOM 2 (작은방)</span>
+                    <span className="text-[10px] font-mono text-slate-500">3.6m x 3.2m</span>
+                  </div>
+                  <div className="absolute -top-[6px] left-4 w-10 h-[6px] bg-amber-100 border-x border-slate-400 z-10" />
+                </div>
+
+                {/* 7. BALCONY */}
+                <div className="absolute top-[84%] left-0 w-[64%] h-[16%] bg-slate-200/80 p-2 border-r-[6px] border-slate-600 flex justify-between items-center pointer-events-none">
+                  <span className="text-[10px] font-bold text-slate-700 bg-white/90 px-1.5 py-0.5 rounded border border-slate-300">BALCONY (발코니)</span>
+                  <span className="text-[9px] text-slate-500">세탁기 / 대피공간</span>
+                </div>
+
+              </div>
+
+              {items.map((item) => {
+                const catMatch = catalogItems.find(c => c.type === item.type);
+                const IconComp = catMatch ? catMatch.icon : Layers;
+                const isSelected = item.id === selectedItemId;
+                const hasToggleState = 'isOn' in item.state || 'isOpen' in item.state || 'active' in item.state || 'isLeak' in item.state;
+                const isStateActive = item.state.isOn || item.state.isOpen || item.state.active || item.state.isLeak;
+                
+                // 직관적 컴팩트 크기 계산: 화면 비율과 사용자 스케일을 조합하여 선명함 유지 및 슬림화
+                const userScale = item.scale || 1.0;
+                const totalScale = userScale * Math.min(1.0, Math.max(0.65, scaleFactor));
+                const iconSize = Math.max(12, Math.round(14 * totalScale));
+                const fontSize = Math.max(8.5, Math.round(9.5 * totalScale));
+                const padY = Math.max(2, Math.round(3 * totalScale));
+                const padX = Math.max(4, Math.round(5 * totalScale));
+
+                return (
+                  <div key={item.id} 
+                    onMouseDown={(e) => handleMouseDown(e, item)}
+                    onTouchStart={(e) => handleMouseDown(e, item)}
+                    onClick={(e) => { 
+                      e.stopPropagation(); 
+                      setSelectedItemId(item.id); 
+                    }}
+                    style={{ 
+                      left: `${item.x * scaleFactor}px`, 
+                      top: `${item.y * scaleFactor}px`, 
+                      transform: 'translate(-50%, -50%)',
+                    }}
+                    className={`absolute cursor-grab active:cursor-grabbing select-none transition-all duration-75 ${isSelected ? 'ring-2 ring-amber-500 rounded-lg z-30' : 'z-20 hover:opacity-95'}`}
+                  >
+                    {/* Visual Effects */}
+                    {item.type === 'light' && item.state.isOn && <div className="absolute -inset-4 bg-amber-300/40 rounded-full blur-md pointer-events-none animate-pulse" />}
+                    {item.type === 'tv' && item.state.isOn && <div className="absolute -inset-2 bg-sky-300/40 rounded-lg blur-sm pointer-events-none" />}
+
+                    {/* Crisp Container */}
+                    <div 
+                      style={{ padding: `${padY}px ${padX}px` }}
+                      className={`rounded-lg flex flex-col items-center justify-center shadow-sm border transition-all ${
+                      item.category === 'furniture' ? (item.state.isOn ? 'bg-sky-500 text-white border-sky-400 shadow-[0_0_8px_rgba(56,189,248,0.5)]' : 'bg-amber-100/95 border-amber-300 text-amber-900')
+                      : item.category === 'device' ? (item.state.isOn ? 'bg-amber-400 text-slate-950 border-amber-300 font-bold shadow-[0_0_10px_rgba(250,204,21,0.6)]' : 'bg-white border-slate-300 text-slate-700')
+                      : (isStateActive ? 'bg-red-500 text-white border-red-400 shadow-[0_0_8px_rgba(239,68,68,0.6)]' : 'bg-white border-slate-300 text-cyan-800')
+                    }`}>
+                      <IconComp size={iconSize} className={item.state.isOn && item.type === 'fan' ? 'animate-spin' : ''} />
+                      
+                      <span 
+                        style={{ fontSize: `${fontSize}px`, lineHeight: '1.2' }}
+                        className="font-bold mt-0.5 text-center whitespace-nowrap px-0.5 tracking-tight"
+                      >
+                        {item.name}
+                      </span>
+                      
+                      {hasToggleState && (
+                        <span 
+                          style={{ fontSize: `${Math.max(7.5, fontSize - 1.5)}px` }}
+                          className={`font-extrabold px-1 py-0.2 rounded mt-0.5 leading-none ${isStateActive ? 'bg-black/60 text-white' : 'bg-slate-200 text-slate-600'}`}
+                        >
+                          {isStateActive ? 'ON' : 'OFF'}
+                        </span>
+                      )}
+                      
+                      {item.type === 'tempSensor' && <span className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white text-[8px] font-mono font-bold px-1 py-0.2 rounded-full border border-rose-200 shadow-sm">{item.state.val}°C</span>}
+                      {item.type === 'luxSensor' && <span className="absolute -top-1.5 -right-1.5 bg-amber-400 text-slate-950 text-[8px] font-mono font-bold px-1 py-0.2 rounded-full border border-amber-200 shadow-sm">{item.state.val}lx</span>}
+                    </div>
+
+                    {/* Interactive Context Menu */}
+                    {isSelected && (
+                      <div 
+                        onClick={(e) => e.stopPropagation()} 
+                        onMouseDown={(e) => e.stopPropagation()} 
+                        onTouchStart={(e) => e.stopPropagation()}
+                        className={`absolute flex flex-col gap-1.5 bg-white border border-slate-300 rounded-xl p-2 shadow-xl z-40 min-w-[150px] ${
+                          item.y < 110 ? 'top-full mt-2' : '-top-20'
+                        } left-1/2 -translate-x-1/2`}
+                      >
+                        <input 
+                          type="text" 
+                          value={item.name} 
+                          onChange={(e) => setItems(prev => prev.map(i => i.id === item.id ? { ...i, name: e.target.value } : i))} 
+                          className="text-[10px] bg-slate-50 border border-slate-300 rounded px-1.5 py-1 text-slate-800 w-full focus:outline-none focus:border-amber-500 font-semibold"
+                          placeholder="기기 이름"
+                        />
+                        <div className="flex justify-between items-center text-[10px] bg-slate-100 rounded px-1.5 py-1">
+                          <span className="text-slate-500 font-semibold">크기 조절</span>
+                          <div className="flex items-center gap-1">
+                            <button onClick={() => updateItemScale(item.id, -0.1)} className="p-0.5 bg-white hover:bg-slate-200 border border-slate-300 rounded text-slate-700 font-bold w-4 h-4 flex items-center justify-center">-</button>
+                            <span className="font-mono text-[9px] font-bold">{Math.round((item.scale || 1.0) * 100)}%</span>
+                            <button onClick={() => updateItemScale(item.id, 0.1)} className="p-0.5 bg-white hover:bg-slate-200 border border-slate-300 rounded text-slate-700 font-bold w-4 h-4 flex items-center justify-center">+</button>
+                          </div>
+                        </div>
+                        <div className="flex justify-between items-center gap-1 pt-0.5">
+                          {hasToggleState && (
+                            <button onClick={() => toggleItemState(item.id)} className="p-1 hover:bg-slate-100 text-amber-600 rounded flex items-center gap-1 text-[10px] font-bold">
+                              {isStateActive ? <ToggleRight size={14}/> : <ToggleLeft size={14} className="text-slate-400"/>} {isStateActive ? 'OFF' : 'ON'}
+                            </button>
+                          )}
+                          <div className="flex gap-1 ml-auto">
+                            <button onClick={() => { setItems(prev => prev.filter(i => i.id !== item.id)); setSelectedItemId(null); }} className="p-1 hover:bg-rose-50 text-rose-600 rounded" title="삭제"><Trash2 size={13} /></button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Control Panels Section */}
+          <div className="grid grid-cols-1 md:grid-cols-12 gap-6 max-w-[1600px] mx-auto">
+            {/* Catalog Palette (Col 1-3) */}
+            <div className="md:col-span-3 bg-white rounded-2xl p-4 border border-slate-200 shadow-sm h-[380px] flex flex-col">
+              <h2 className="text-sm font-bold text-slate-800 mb-2">가구 및 기기 팔레트</h2>
+              <div className="flex gap-1 mb-2 bg-slate-100 p-1 rounded-xl border border-slate-200">
+                {['all', 'furniture', 'device', 'sensor'].map(tab => (
+                  <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 text-[11px] py-1 rounded-lg capitalize font-medium transition-colors ${activeTab === tab ? 'bg-amber-500 text-white font-semibold shadow-sm' : 'text-slate-600 hover:text-slate-900'}`}>
+                    {tab === 'all' ? '전체' : tab === 'furniture' ? '가구' : tab === 'device' ? '기기' : '센서'}
+                  </button>
+                ))}
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                {catalogItems.filter(c => activeTab === 'all' || c.category === activeTab).map(catalog => {
+                  const IconComp = catalog.icon;
+                  return (
+                    <div key={catalog.type} draggable onDragStart={(e) => e.dataTransfer.setData('catalogType', catalog.type)} onClick={() => addItemToFloorplan(catalog)} className="bg-slate-50 hover:bg-slate-100 border border-slate-200 hover:border-amber-400 p-2 rounded-xl flex items-center justify-between cursor-pointer group transition-all">
+                      <div className="flex items-center gap-2.5">
+                        <div className="p-1.5 rounded-lg bg-white border border-slate-200 text-amber-600 shadow-sm"><IconComp size={16} /></div>
+                        <div><div className="text-xs font-semibold text-slate-800">{catalog.name}</div><div className="text-[10px] text-slate-500 capitalize">{catalog.category}</div></div>
+                      </div>
+                      <Plus size={14} className="text-slate-400 group-hover:text-amber-600" />
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Sensor Sliders (Col 4-8) */}
+            <div className="md:col-span-5 bg-white rounded-2xl p-4 border border-slate-200 shadow-sm h-[380px] flex flex-col justify-between">
+              <div>
+                <h3 className="text-sm font-bold text-rose-600 flex items-center gap-2 mb-2"><SlidersHorizontal size={16} /> 실시간 센서 수치 조작기</h3>
+                <p className="text-[11px] text-slate-500 mb-3">슬라이더를 이동하거나 버튼을 누르면 설정된 연동 기기가 실시간으로 작동합니다.</p>
+                <div className="space-y-3 max-h-[270px] overflow-y-auto pr-1 custom-scrollbar">
+                  {sensorItemsList.map(sensor => (
+                    <div key={sensor.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 space-y-2">
+                      <div className="flex justify-between items-center text-xs">
+                        <span className="font-bold text-slate-800">{sensor.name}</span>
+                        <span className="font-mono text-amber-600 font-bold">
+                          {sensor.type === 'tempSensor' && `${sensor.state.val}°C`}
+                          {sensor.type === 'luxSensor' && `${sensor.state.val} lx`}
+                          {sensor.type === 'motionSensor' && (sensor.state.active ? '감지됨 (Active)' : '미감지')}
+                          {sensor.type === 'waterSensor' && (sensor.state.isLeak ? '누수 감지!' : '정상')}
+                          {sensor.type === 'windowSensor' && (sensor.state.isOpen ? '열림' : '닫힘')}
+                        </span>
+                      </div>
+                      
+                      {sensor.type === 'tempSensor' && (
+                        <input type="range" min="15" max="35" step="0.5" value={sensor.state.val} onChange={(e) => updateSensorVal(sensor.id, 'val', parseFloat(e.target.value))} className="w-full accent-rose-500 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer" />
+                      )}
+                      {sensor.type === 'luxSensor' && (
+                        <input type="range" min="0" max="1000" step="10" value={sensor.state.val} onChange={(e) => updateSensorVal(sensor.id, 'val', parseInt(e.target.value))} className="w-full accent-amber-500 h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer" />
+                      )}
+                      {['motionSensor', 'waterSensor', 'windowSensor'].includes(sensor.type) && (
+                        <button onClick={() => toggleItemState(sensor.id)} className={`w-full py-1.5 rounded-lg text-xs font-bold transition-colors ${(sensor.state.active || sensor.state.isLeak || sensor.state.isOpen) ? 'bg-rose-100 text-rose-700 border border-rose-300' : 'bg-slate-200 text-slate-700 hover:bg-slate-300'}`}>
+                          상태 트리거 토글
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                  {sensorItemsList.length === 0 && <div className="text-center text-slate-400 text-xs py-4">배치된 센서가 없습니다.</div>}
+                </div>
+              </div>
+            </div>
+
+            {/* Smart Rules Control Panel (Col 9-12) */}
+            <div className="md:col-span-4 bg-white rounded-2xl p-4 border border-slate-200 shadow-sm h-[380px] flex flex-col justify-between">
+              <div>
+                <h2 className="text-sm font-bold text-sky-600 flex items-center gap-2 mb-1"><Zap size={16} /> 스마트홈 규칙 제어</h2>
+                <p className="text-[11px] text-slate-500 mb-2">규칙을 선택하여 ON/OFF 토글하거나 수동으로 실행할 수 있습니다.</p>
+              </div>
+
+              <div className="flex-1 overflow-y-auto mb-3 space-y-1.5 pr-1 custom-scrollbar">
+                <div className="text-[10px] text-slate-500 mb-1 font-semibold flex justify-between items-center">
+                  <span>등록된 자동화 규칙 ({rules.length})</span>
+                  <span className="text-[9px] text-amber-600 font-normal">ON: 실시간 자동 연동</span>
+                </div>
+                {rules.map(rule => (
+                  <div key={rule.id} className={`p-2 rounded-xl border text-xs flex items-center justify-between gap-2 transition-all ${rule.enabled ? 'bg-amber-50/60 border-amber-200' : 'bg-slate-50 border-slate-200 opacity-70'}`}>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 font-bold text-slate-800 text-[11px] truncate">
+                        <Zap size={12} className={rule.enabled ? "text-amber-500 flex-shrink-0" : "text-slate-400 flex-shrink-0"} />
+                        <span className="truncate">{rule.name}</span>
+                      </div>
+                      <div className="text-[10px] text-slate-500 truncate mt-0.5">
+                        {rule.sensorName} → {rule.targetName} ({rule.actionValue ? 'ON' : 'OFF'})
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <button 
+                        onClick={() => toggleRuleEnabled(rule.id)}
+                        className={`px-2 py-1 rounded-lg text-[10px] font-bold transition-all flex items-center gap-1 ${
+                          rule.enabled 
+                            ? 'bg-amber-500 text-white shadow-sm hover:bg-amber-600' 
+                            : 'bg-slate-200 text-slate-600 hover:bg-slate-300'
+                        }`}
+                        title="규칙 ON/OFF 토글"
+                      >
+                        {rule.enabled ? <ToggleRight size={13} /> : <ToggleLeft size={13} />}
+                        {rule.enabled ? 'ON' : 'OFF'}
+                      </button>
+                      <button 
+                        onClick={() => executeRuleById(rule.id)}
+                        className="p-1 text-sky-600 hover:bg-sky-50 rounded-lg transition-colors"
+                        title="즉시 수동 실행"
+                      >
+                        <Power size={13} />
+                      </button>
+                      <button 
+                        onClick={() => deleteRule(rule.id)}
+                        className="p-1 text-rose-500 hover:bg-rose-50 rounded-lg transition-colors"
+                        title="규칙 삭제"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+                {rules.length === 0 && (
+                  <div className="text-center text-slate-400 text-xs py-6">등록된 자동화 규칙이 없습니다.</div>
+                )}
+              </div>
+
+              <div className="bg-slate-50 p-2.5 rounded-xl border border-slate-200 space-y-2">
+                <div className="text-[10px] font-bold text-slate-600 flex items-center gap-1">
+                  <SlidersHorizontal size={12} className="text-sky-600" /> 규칙 선택 실행 / ON-OFF 제어
+                </div>
+                <div className="flex items-center gap-2">
+                  <select 
+                    value={selectedRuleId} 
+                    onChange={(e) => setSelectedRuleId(e.target.value)}
+                    className="flex-1 bg-white border border-slate-300 rounded-lg p-1.5 text-xs text-slate-800 focus:outline-none focus:border-sky-500"
+                  >
+                    <option value="">-- 규칙 선택 --</option>
+                    {rules.map(r => (
+                      <option key={r.id} value={r.id}>
+                        [{r.enabled ? 'ON' : 'OFF'}] {r.name}
+                      </option>
+                    ))}
+                  </select>
+                  <button 
+                    disabled={!selectedRuleId}
+                    onClick={() => {
+                      if (selectedRuleId) toggleRuleEnabled(selectedRuleId);
+                    }}
+                    className="px-2.5 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-200 disabled:text-slate-400 text-slate-950 text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    ON/OFF
+                  </button>
+                  <button 
+                    disabled={!selectedRuleId}
+                    onClick={() => {
+                      if (selectedRuleId) executeRuleById(selectedRuleId);
+                    }}
+                    className="px-2.5 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-200 disabled:text-slate-400 text-white text-xs font-bold rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    실행
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Modals */}
+          {showRuleModal && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-md shadow-2xl overflow-hidden">
+                <div className="bg-slate-50 p-4 border-b border-slate-200 flex justify-between items-center">
+                  <h3 className="font-bold text-slate-900 flex items-center gap-2"><Zap className="text-amber-500" size={18} /> 새 자동화 규칙 만들기</h3>
+                  <button onClick={() => setShowRuleModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+                </div>
+                <form onSubmit={handleAddRule} className="p-5 space-y-4 text-sm">
+                  <div>
+                    <label className="block text-slate-600 text-xs mb-1">규칙 이름</label>
+                    <input 
+                      required 
+                      type="text" 
+                      value={newRule.name} 
+                      onChange={e => {
+                        setNewRule({...newRule, name: e.target.value});
+                        if (ruleError) setRuleError('');
+                      }} 
+                      className={`w-full bg-slate-50 border ${ruleError ? 'border-rose-500' : 'border-slate-300'} rounded-lg p-2 text-slate-800 text-xs focus:bg-white`} 
+                      placeholder="예: 온도 26도 이상 에어컨 ON" 
+                    />
+                    {ruleError && <p className="text-[11px] text-rose-500 mt-1 font-semibold">{ruleError}</p>}
+                  </div>
+                  <div className="grid grid-cols-3 gap-3">
+                    <div className="col-span-1">
+                      <label className="block text-slate-600 text-xs mb-1">트리거 센서</label>
+                      <select value={newRule.sensorName} onChange={e => {
+                        const sensor = items.find(i => i.name === e.target.value);
+                        const isBoolSensor = sensor && ['motionSensor', 'windowSensor', 'waterSensor'].includes(sensor.type);
+                        setNewRule({...newRule, sensorName: e.target.value, condition: isBoolSensor ? 'is' : 'gt', threshold: isBoolSensor ? true : 25});
+                      }} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white">
+                        {items.filter(i => i.category === 'sensor').map(sensor => (
+                          <option key={sensor.id} value={sensor.name}>{sensor.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="col-span-1">
+                      <label className="block text-slate-600 text-xs mb-1">조건</label>
+                      <select value={newRule.condition} onChange={e => setNewRule({...newRule, condition: e.target.value, threshold: e.target.value === 'is' ? true : 25})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white">
+                        <option value="gt">이상 (&gt;)</option>
+                        <option value="lt">이하 (&lt;)</option>
+                        <option value="is">상태 일치 (==)</option>
+                      </select>
+                    </div>
+                    <div className="col-span-1">
+                      <label className="block text-slate-600 text-xs mb-1">임계값/상태</label>
+                      {newRule.condition === 'is' ? (
+                        <select value={newRule.threshold} onChange={e => setNewRule({...newRule, threshold: e.target.value === 'true'})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white">
+                          <option value="true">참 (감지/열림)</option>
+                          <option value="false">거짓 (미감지/닫힘)</option>
+                        </select>
+                      ) : (
+                        <input type="number" value={newRule.threshold} onChange={e => setNewRule({...newRule, threshold: e.target.value})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white" />
+                      )}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-slate-600 text-xs mb-1">작동 대상 기기</label>
+                      <select value={newRule.targetName} onChange={e => setNewRule({...newRule, targetName: e.target.value})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white">
+                        {items.filter(i => i.category === 'device' || i.category === 'furniture').map(device => (
+                          <option key={device.id} value={device.name}>{device.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-slate-600 text-xs mb-1">실행 상태</label>
+                      <select value={newRule.actionValue} onChange={e => setNewRule({...newRule, actionValue: e.target.value === 'true'})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white">
+                        <option value="true">켜기 (ON)</option>
+                        <option value="false">끄기 (OFF)</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="pt-2 flex gap-2">
+                    <button type="button" onClick={() => setShowRuleModal(false)} className="flex-1 py-2 rounded-lg bg-slate-200 text-slate-700 font-bold hover:bg-slate-300 transition-colors">취소</button>
+                    <button type="submit" className="flex-1 py-2 rounded-lg bg-amber-500 text-slate-950 font-bold hover:bg-amber-400 transition-colors">추가하기</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+          {showCustomItemModal && (
+            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-sm shadow-2xl overflow-hidden">
+                <div className="bg-slate-50 p-4 border-b border-slate-200 flex justify-between items-center">
+                  <h3 className="font-bold text-slate-900 flex items-center gap-2"><Box className="text-sky-600" size={18} /> 새 기기/가구 만들기</h3>
+                  <button onClick={() => setShowCustomItemModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+                </div>
+                <form onSubmit={handleAddCustomItem} className="p-5 space-y-4 text-sm">
+                  <div>
+                    <label className="block text-slate-600 text-xs mb-1">기기/가구 이름</label>
+                    <input required type="text" value={newCustomItem.name} onChange={e => setNewCustomItem({...newCustomItem, name: e.target.value})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white" placeholder="예: 공기청정기" />
+                  </div>
+                  <div>
+                    <label className="block text-slate-600 text-xs mb-1">카테고리</label>
+                    <select value={newCustomItem.category} onChange={e => setNewCustomItem({...newCustomItem, category: e.target.value})} className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs focus:bg-white">
+                      <option value="furniture">가구 (Furniture)</option>
+                      <option value="device">기기 (Device)</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input type="checkbox" id="hasState" checked={newCustomItem.hasState} onChange={e => setNewCustomItem({...newCustomItem, hasState: e.target.checked})} className="w-4 h-4 rounded bg-slate-50 border-slate-300 text-amber-500 focus:ring-amber-500" />
+                    <label htmlFor="hasState" className="text-slate-700 text-xs cursor-pointer">전원(ON/OFF) 기능 포함</label>
+                  </div>
+                  <div className="pt-4 flex gap-2">
+                    <button type="button" onClick={() => setShowCustomItemModal(false)} className="flex-1 py-2 rounded-lg bg-slate-200 text-slate-700 font-bold hover:bg-slate-300 transition-colors text-xs">취소</button>
+                    <button type="submit" className="flex-1 py-2 rounded-lg bg-sky-600 text-white font-bold hover:bg-sky-500 transition-colors text-xs">팔레트에 추가</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          )}
+
+        </div>
+      );
+    };
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
